@@ -39,7 +39,7 @@ function norm(str) {
 /** Load CSV into memory: Map<emailLower, loginLink> */
 async function loadCsv(path = DEFAULT_CSV_PATH) {
   return new Promise((resolve, reject) => {
-    if (!fs.existsSync(path))
+    if (!fs.existsSync("data/"+path))
       return reject(new Error(`CSV not found: ${path}`));
 
     const tmp = new Map();
