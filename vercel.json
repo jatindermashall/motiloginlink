@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "*": { "runtime": "nodejs18.x" }
+  },
+  "env": {
+    "CSV_PATH": "data/magic_login_list.csv"
+  }
+}
