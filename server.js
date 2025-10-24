@@ -4,16 +4,22 @@ require('dotenv').config();
 const express = require('express');
 const csv = require('csv-parser');
 const fs = require('fs');
+const path = require('path');
 const cors = require('cors');
 
 /** ======== CONFIG ======== */
 const PORT = process.env.PORT || 3000;
-const DEFAULT_CSV_PATH = process.env.DEFAULT_CSV_PATH || '/mnt/data/magic_login_list.csv';
+
+// Resolve CSV path from repo root by default: ./data/magic_login_list.csv
+const DEFAULT_CSV_PATH = process.env.CSV_PATH
+  ? path.join(process.cwd(), process.env.CSV_PATH)            // e.g. CSV_PATH="data/magic_login_list.csv"
+  : path.join(process.cwd(), 'data', 'magic_login_list.csv'); // default
+
 const API_ACCESS_KEY = process.env.API_ACCESS_KEY || ''; // set blank to disable
 
 // CSV headers in your file
 const EMAIL_COL = 'Email';
-const LINK_COL = 'Login Link';
+const LINK_COL  = 'Login Link';
 
 /** ======== APP SETUP ======== */
 const app = express();
@@ -23,8 +29,7 @@ app.use(express.json());
 function authGuard(req, res, next) {
   if (!API_ACCESS_KEY) return next(); // disabled
   const key = req.header('x-api-key');
-  if (key !== API_ACCESS_KEY)
-    return res.status(401).json({ error: 'Unauthorized' });
+  if (key !== API_ACCESS_KEY) return res.status(401).json({ error: 'Unauthorized' });
   next();
 }
 
@@ -37,27 +42,27 @@ function norm(str) {
 }
 
 /** Load CSV into memory: Map<emailLower, loginLink> */
-async function loadCsv(path = DEFAULT_CSV_PATH) {
+async function loadCsv(csvPath = DEFAULT_CSV_PATH) {
   return new Promise((resolve, reject) => {
-    if (!fs.existsSync("data/"+path))
-      return reject(new Error(`CSV not found: ${path}`));
+    if (!fs.existsSync(csvPath)) {
+      return reject(new Error(`CSV not found: ${csvPath}`));
+    }
 
     const tmp = new Map();
-    fs.createReadStream(path)
+    fs.createReadStream(csvPath)
       .pipe(csv())
       .on('data', (row) => {
         const email = norm(row[EMAIL_COL]);
         const link = (row[LINK_COL] ?? '').toString().trim();
         if (email && link) {
-          // first match wins; comment next line & uncomment following to let "last write wins"
+          // first match wins; switch to "last write wins" by replacing the next line with: tmp.set(email, link)
           if (!tmp.has(email)) tmp.set(email, link);
-          // tmp.set(email, link); // <-- use this line if you prefer last occurrence
         }
       })
       .on('end', () => {
         emailToLink = tmp;
-        lastLoadedPath = path;
-        resolve({ count: emailToLink.size, path });
+        lastLoadedPath = csvPath;
+        resolve({ count: emailToLink.size, path: csvPath });
       })
       .on('error', reject);
   });
@@ -65,45 +70,35 @@ async function loadCsv(path = DEFAULT_CSV_PATH) {
 
 /** ======== ROUTES ======== */
 app.get('/health', (req, res) => {
-  res.json({
-    ok: true,
-    loaded: emailToLink.size,
-    csvPath: lastLoadedPath,
-  });
+  res.json({ ok: true, loaded: emailToLink.size, csvPath: lastLoadedPath });
 });
 
-/** Lookup via query string */
 app.get('/lookup', (req, res) => {
   const email = norm(req.query.email);
-  if (!email)
-    return res.status(400).json({ error: 'Missing email query param' });
+  if (!email) return res.status(400).json({ error: 'Missing email query param' });
 
   const link = emailToLink.get(email);
   if (!link) return res.status(404).json({ error: 'Not found' });
 
-  res.json({ email: req.query.email.trim(), loginLink: link });
+  res.json({ email: (req.query.email || '').toString().trim(), loginLink: link });
 });
 
-/** Lookup via POST JSON { email } */
 app.post('/lookup', authGuard, (req, res) => {
   const email = norm(req.body?.email);
-  if (!email)
-    return res.status(400).json({ error: 'Missing "email" in JSON body' });
+  if (!email) return res.status(400).json({ error: 'Missing "email" in JSON body' });
 
   const link = emailToLink.get(email);
   if (!link) return res.status(404).json({ error: 'Not found' });
 
-  res.json({
-    email: (req.body.email ?? '').toString().trim(),
-    loginLink: link,
-  });
+  res.json({ email: (req.body.email ?? '').toString().trim(), loginLink: link });
 });
 
-/** Reload CSV from disk (optionally pass { path } to switch file) */
 app.post('/reload', authGuard, async (req, res) => {
-  const path = (req.body?.path || DEFAULT_CSV_PATH).toString();
+  const reqPath = (req.body?.path || DEFAULT_CSV_PATH).toString();
+  // resolve relative paths from project root
+  const csvPath = path.isAbsolute(reqPath) ? reqPath : path.join(process.cwd(), reqPath);
   try {
-    const info = await loadCsv(path);
+    const info = await loadCsv(csvPath);
     res.json({ reloaded: true, ...info });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -114,12 +109,10 @@ app.post('/reload', authGuard, async (req, res) => {
 loadCsv(DEFAULT_CSV_PATH)
   .then((info) => {
     console.log(`📄 Loaded ${info.count} records from: ${info.path}`);
-    app.listen(PORT, () =>
-      console.log(`🚀 Lookup API running on http://localhost:${PORT}`)
-    );
+    app.listen(PORT, () => console.log(`🚀 Lookup API running on http://localhost:${PORT}`));
     console.log(`   GET  /lookup?email=user@example.com`);
     console.log(`   POST /lookup  { "email": "user@example.com" }`);
-    console.log(`   POST /reload  { "path": "C:\\\\path\\\\to\\\\file.csv" }`);
+    console.log(`   POST /reload  { "path": "data/magic_login_list.csv" }`);
   })
   .catch((err) => {
     console.error('Failed to load CSV:', err.message);
